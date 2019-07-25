@@ -19,6 +19,7 @@ _session = None
 assert os.environ.get('GCS_BUCKET')
 GCS_PROXY_STREAMING = int(os.environ.get('GCS_PROXY_STREAMING', '0')) > 0
 GCS_PROXY_BUCKET = os.environ['GCS_BUCKET']
+GCS_PROXY_HEADER_EXCEPTION = os.environ.get('GCS_PROXY_HEADER_EXCEPTION', '').split(',')
 
 app = Flask(__name__)
 
@@ -68,8 +69,9 @@ def get_bearer_token():
 
 def copy_headers(input_headers, extra_headers):
     result = {}
+    global GCS_PROXY_HEADER_EXCEPTION
     for key in input_headers:
-        if key.startswith('X-'):
+        if key in GCS_PROXY_HEADER_EXCEPTION:
             continue
         result[key] = input_headers[key]
     for key in extra_headers:
