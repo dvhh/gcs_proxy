@@ -20,7 +20,7 @@ assert os.environ.get('GCS_BUCKET')
 GCS_PROXY_STREAMING = int(os.environ.get('GCS_PROXY_STREAMING', '0')) > 0
 GCS_PROXY_BUCKET = os.environ['GCS_BUCKET']
 GCS_PROXY_HEADER_EXCEPTION = os.environ.get('GCS_PROXY_HEADER_EXCEPTION', '').split(',')
-
+GCS_PROXY_SERVICE_ACCOUNT = os.environ.get('GCS_PROXY_SERVICE_ACCOUNT', 'default')
 app = Flask(__name__)
 
 app.logger.debug(GCS_PROXY_BUCKET)
@@ -41,8 +41,9 @@ def refresh_token():
     Refresh service account token
     '''
     session = get_session()
+    global GCS_PROXY_SERVICE_ACCOUNT
     response = session.get(
-        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/{}/token'.format(GCS_PROXY_SERVICE_ACCOUNT),
         headers={
             'Metadata-Flavor': 'Google',
             'User-Agent': 'GCS Proxy'
