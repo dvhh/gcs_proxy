@@ -10,6 +10,7 @@ import os
 import re
 import requests
 from flask import Flask, Response, abort
+from multiprocessing import Pool
 
 _bearer_token = None
 _bearer_token_ctime = 0
@@ -25,6 +26,12 @@ app = Flask(__name__)
 
 app.logger.debug(GCS_PROXY_BUCKET)
 
+_pool = None
+def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = Pool(processes=2)
+    return _pool
 
 def get_session():
     '''
@@ -106,11 +113,45 @@ def reformat_time(iso_date: str):
     timestamp = time.strptime(stripped_date, '%Y-%m-%dT%H:%M:%SZ')
     return time.strftime('%a, %d %b %Y %H:%M:%S GMT', timestamp)
 
+def get_auth_response(uri):
+    token = get_bearer_token()
+    return requests.get(uri, headers={
+        'Authorization': 'Bearer {}'.format(token),
+        'User-Agent': 'GCS Proxy'
+    })
 
 @app.route('/<path:path>', methods=['GET'])
 def bucket_proxy(path: str):
     '''
     Object proxy handler
+    '''
+    global GCS_PROXY_BUCKET
+    path = urllib.parse.quote(path, safe='')
+
+    urls = [
+        'https://www.googleapis.com/storage/v1/b/{}/o/{}'.format(
+        GCS_PROXY_BUCKET,
+        path),
+        'https://www.googleapis.com/storage/v1/b/{}/o/{}?alt=media'.format(
+        GCS_PROXY_BUCKET,
+        path)
+    ]
+    pool = get_pool()
+    responses = pool.map(get_auth_response, urls)
+    if responses[0].status_code != 200:
+        responses[0].close()
+        abort(responses[0].status_code)
+    metadata = responses[0].json()
+    extra_headers = {
+        'Last-Modified': reformat_time(metadata['updated']), 
+        'X-Timing-Metadata': responses[0].elapsed,
+        'X-Timing-Content': responses[1].elapsed
+    }
+    return Response(
+        responses[1].content,
+        mimetype=responses[1].headers['Content-Type'],
+        headers=copy_headers(responses[1].headers, extra_headers)
+    )
     '''
     token = get_bearer_token()
     session = get_session()
@@ -160,6 +201,7 @@ def bucket_proxy(path: str):
         mimetype=response.headers['Content-Type'],
         headers=copy_headers(response.headers, extra_headers)
     )
+    '''
 
 
 @app.route('/', methods=['GET'])
