@@ -9,63 +9,25 @@ import urllib.parse
 import os
 import re
 import requests
-from flask import Flask, Response, abort
+from flask import Flask, Response, abort, make_response
+from google.cloud import storage
 
-_bearer_token = None
-_bearer_token_ctime = 0
-
-_session = None
 
 assert os.environ.get('GCS_BUCKET')
-GCS_PROXY_STREAMING = int(os.environ.get('GCS_PROXY_STREAMING', '0')) > 0
 GCS_PROXY_BUCKET = os.environ['GCS_BUCKET']
-GCS_PROXY_HEADER_EXCEPTION = os.environ.get('GCS_PROXY_HEADER_EXCEPTION', '').split(',')
-GCS_PROXY_SERVICE_ACCOUNT = os.environ.get('GCS_PROXY_SERVICE_ACCOUNT', 'default')
 app = Flask(__name__)
 
 app.logger.debug(GCS_PROXY_BUCKET)
 
-
-def get_session():
-    '''
-    Singular requests session object for the current process
-    '''
-    global _session
-    if _session is None:
-        _session = requests.Session()
-    return _session
+_storage_client = None
 
 
-def refresh_token():
-    '''
-    Refresh service account token
-    '''
-    session = get_session()
-    global GCS_PROXY_SERVICE_ACCOUNT
-    response = session.get(
-        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/{}/token'.format(GCS_PROXY_SERVICE_ACCOUNT),
-        headers={
-            'Metadata-Flavor': 'Google',
-            'User-Agent': 'GCS Proxy'
-        }
-    )
-    return response.json()
+def get_storage_client():
+    global _storage_client
+    if _storage_client is None:
+        _storage_client = storage.Client()
+    return _storage_client
 
-
-def get_bearer_token():
-    '''
-    Ensure token freshness
-    '''
-    global _bearer_token
-    global _bearer_token_ctime
-    if time.time() - _bearer_token_ctime > 60:
-        _bearer_token = None
-
-    if _bearer_token is None:
-        _bearer_token = refresh_token()
-        _bearer_token_ctime = time.time()
-
-    return _bearer_token['access_token']
 
 
 def copy_headers(input_headers, extra_headers):
@@ -80,27 +42,6 @@ def copy_headers(input_headers, extra_headers):
     return result
 
 
-def get_metadata(bucket: str, path: str):
-    uri = 'https://www.googleapis.com/storage/v1/b/{}/o/{}'.format(
-        bucket,
-        path
-    )
-    app.logger.debug('[{}]\n'.format(uri))
-    token = get_bearer_token()
-    session = get_session()
-    response = session.get(uri, headers={
-        'Authorization': 'Bearer {}'.format(token),
-        'User-Agent': 'GCS Proxy'
-    })
-    if response.status_code != 200:
-        app.logger.debug(
-            '[{}]\n{}\n'.format(response.status_code, response.content)
-        )
-        response.close()
-        abort(response.status_code)
-    return response.json()
-
-
 def reformat_time(iso_date: str):
     stripped_date = re.sub(r'\.\d+Z', 'Z', iso_date)
     timestamp = time.strptime(stripped_date, '%Y-%m-%dT%H:%M:%SZ')
@@ -112,54 +53,28 @@ def bucket_proxy(path: str):
     '''
     Object proxy handler
     '''
-    token = get_bearer_token()
-    session = get_session()
-    path = urllib.parse.quote(path, safe='')
     global GCS_PROXY_BUCKET
-    metadata = get_metadata(GCS_PROXY_BUCKET, path)
-    app.logger.debug(json.dumps(metadata))
-    uri = 'https://www.googleapis.com/storage/v1/b/{}/o/{}?alt=media'.format(
-        GCS_PROXY_BUCKET,
-        path
-    )
-    extra_headers = {'Last-Modified': reformat_time(metadata['updated'])}
-    global GCS_PROXY_STREAMING
-    app.logger.debug('[{}]\n'.format(uri))
-    if GCS_PROXY_STREAMING:
-        # streaming response
-        response = session.get(uri, headers={
-            'Authorization': 'Bearer {}'.format(token),
-            'User-Agent': 'GCS Proxy'
-        }, stream=True)
-        if response.status_code != 200:
-            response.close()
-            abort(response.status_code)
-
-        def send_response():
-            for chunk in response.iter_content(chunk_size=4096):
-                yield chunk
-            response.close()
-
-        result = Response(
-            send_response(),
-            mimetype=response.headers['Content-Type'],
-            headers=copy_headers(response.headers, extra_headers)
-        )
-        return result
-
-    # non streaming response
-    response = session.get(uri, headers={
-        'Authorization': 'Bearer {}'.format(token),
-        'User-Agent': 'GCS Proxy'
-    })
-    if response.status_code != 200:
-        response.close()
-        abort(response.status_code)
-    return Response(
-        response.content,
-        mimetype=response.headers['Content-Type'],
-        headers=copy_headers(response.headers, extra_headers)
-    )
+    storage_client = get_storage_client()
+    bucket = storage_client.get_bucket(GCS_PROXY_BUCKET)
+    blob = bucket.get_blob(path)
+    if blob is None:
+        abort(404)
+    content = blob.download_as_string()
+    headers = {
+        'Last-Modified': blob.updated,
+        'Content-Length': blob.size,
+        'Content-type': blob.content_type,
+        # 'Content-encoding': blob.content_encoding,
+        # 'Content-language': blob.content_language,
+        'Etag': blob.etag,
+        'Crc32c': blob.crc32c,
+        'md5_hash': blob.md5_hash
+    }
+    if blob.content_encoding is not None:
+        headers['Content-encoding'] = blob.content_encoding
+    if blob.content_language is not None:
+        headers['Content-language'] = blob.content_language
+    return make_response(content, headers);
 
 
 @app.route('/', methods=['GET'])
