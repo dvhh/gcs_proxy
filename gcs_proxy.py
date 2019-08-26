@@ -22,10 +22,6 @@ assert os.environ.get('GCS_BUCKET')
 GCS_PROXY_BUCKET = os.environ['GCS_BUCKET']
 app = Starlette(debug=True)
 
-logging.basicConfig(
-    level=2,
-    format="%(asctime)-15s %(levelname)-8s %(message)s"
-)
 # app.logger.debug(GCS_PROXY_BUCKET)
 
 _storage_client = None
@@ -39,8 +35,8 @@ def get_storage_client():
 
 
 def reformat_time(iso_date: str):
-    logger = logging.getLogger("uvicorn")
-    logger.info(iso_date)
+    # logger = logging.getLogger("uvicorn")
+    # logger.info(iso_date)
     stripped_date = re.sub(r'\.\d+\+00:00', '', iso_date)
     timestamp = time.strptime(stripped_date, '%Y-%m-%d %H:%M:%S')
     return time.strftime('%a, %d %b %Y %H:%M:%S GMT', timestamp)
